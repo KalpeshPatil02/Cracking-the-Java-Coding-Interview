@@ -8589,3 +8589,1497 @@ string = string.intern();
 
 One last word; you need to be very cautious when it comes to optimization or possible performance gain. Whatever you do, you need to carefully observe the effects on your application in a production environment.
 </details>
+
+## 339. What is the off-heap memory?
+<details>
+  <summary>Short Answer</summary>
+
+A portion of memory that is not in the heap memory.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+The heap memory is the realm of the garbage collector. The garbage collector can give you pieces of this memory and then when you don't need them anymore, it will take them back. In a nutshell, that's what the garbage collector is doing. The off-heap memory is not managed by the garbage collector. To get pieces of it, you need to use the old `ByteBuffer` API or better the `Memory` API. You can get very large segments in it, that will not be moved around by the garbage collector activity. So it's great to map files in memory, for instance.
+
+```java
+var user = new User("Patricia");
+var memorySegment = Arena.ofAuto().allocate(1_000_000_000_000L);
+```
+
+One last word; the ByteBuffer API is an API from Java 4 that was in 2002 and it can give you access to the off-memory. It was superseded in 22 by the Memory API, which is safer to use and can index the memory segments with longs instead of ints for the ByteBuffer. Much better for 64-bit systems.
+</details>
+
+## 340. Why do stateful operations don't play well with parallel streams?
+<details>
+  <summary>Short Answer</summary>
+
+Because you need to share the state between the multiple threads.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+Some stream operations are said to be stateful. That's the case for `limit()` or `skip()`, for instance. Limit() needs to interrupt your stream after it saw a given amount of elements. And if your stream is ordered, it should return the N first elements of the upstream, not N elements randomly chosen. Even if your stream is not ordered, it still needs an internal counter that is shared among the different threads that are computing your stream in parallel. This added synchronization can only slow down your computation, something you probably want to avoid.
+
+```java
+var ints = List.of(/* lots of */);
+var result = ints.stream()
+        // don't go parallel in that case
+        .parallel()
+        // the counter is shared among threads.
+        .limit(100)
+        .toList();
+```
+
+One last word; you need to be careful when you use parallel streams. In general, parallel stream will use all the cores of your CPU to conduct their operations and may slow down your other processes. When it comes to performance, as usual, measure, don't guess.
+</details>
+
+## 341. How does dropWhile() work?
+<details>
+  <summary>Short Answer</summary>
+
+It acts like a door that is closed at first and that opens on a Predicate.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+`dropWhile()` is an intermediate method of the Stream API. It takes a Predicate as a parameter that is evaluated for the elements of the streamer. While the predicate results to false, no element is pushed to the downstream. When the predicates resolve to true then the door opens meaning that all the remaining elements are pushed to the downstream, and the Predicate is not evaluated anymore. If your stream is ordered, then dropWhile() drops the first elements of your stream. But if your stream is not ordered, then this notion of first element is not defined, so the results may vary. The implementation can actually drop any subset of your source.
+
+```java
+var ints = List.of(1, 5, 3, 0, 2, 6, 8, 3, 2, 5);
+ints.stream()
+    .dropWhile(n -> n < 6)
+    .toList();
+// > 6, 8, 3, 2, 5
+```
+
+One last word; dropWhile() is a stateful operation, meaning that it does not play well with parallel streams, especially if your stream is ordered. Actually, using dropWhile() on an ordered parallel stream will probably slow down your operation, so it's probably not a good idea.
+</details>
+
+## 342. What is String deduplication?
+<details>
+  <summary>Short Answer</summary>
+
+A feature that may save some memory in your application.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+String deduplication consists in detecting if two Strings of characters have the same value in your application and then create only one instance of their internal arrays. You can share Strings in Java because once you created one, you cannot change its value. This deduplication feature was added to the G1 garbage collector back in the days of Java 8 and the deduplication actually operates on the byte array of the String, not on the String object itself. And because there is some CPU time involved, the deduplication is attempted only on Strings that have a certain age.
+
+```java
+var s1 = new String("Hello");
+var s2 = new String("Hello");
+```
+
+One last word; String deduplication is also supported by ZGC since Java 18. You need to add the option `-XX:UseStringDeduplication` to activate it.
+</details>
+
+## 343. What is the difference between a wrapper class and a value-based class?
+<details>
+  <summary>Short Answer</summary>
+
+They are not the same.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+A wrapper class is a value-based class, but not the contrary. A wrapper class is a class that wraps a primitive type and they have been in a JDK since the beginning and that's all there is to it. A value-based class is a notion that is coming from `Valhalla` and that appeared in JDK 16. Technically speaking, it is an annotation added on some classes. The wrapper classes have it, but also some classes from the Date and Time API for instance, or Optional and even some non-modifiable collections are annotated with `@ValueBased`. This annotation triggers some warnings at compile time. If you do things with these classes, that will fail once Valhalla is there, like using their instances for synchronization for instance.
+
+```java
+@jdk.internal.ValueBased
+class Integer extends Number {
+}
+
+Integer key = ...;
+
+// Warning: synchronizing on instance of a value-based class
+synchronized (key) {
+}
+```
+
+```java
+@jdk.internal.ValueBased
+final class Integer extends Number {}
+
+@jdk.internal.ValueBased
+final class Duration {}
+
+@jdk.internal.ValueBased
+final class Optional<T> {}
+
+@jdk.internal.ValueBased
+// returned by Set.of(...)
+final class SetN<E> {}
+```
+
+One last word; this annotation is internal to the JDK. You can see it if you check the source code, but you cannot use it for your own classes.
+</details>
+
+## 344. How does the Collectors.teeing() work?
+<details>
+  <summary>Short Answer</summary>
+
+The `teeing()` Collector is a rather complex collector added in JDK 12.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+The `teeing()` collector consists in collecting your stream with two different collectors that will produce two different results and then merging these results with a merging function. These two collectors are the first two parameters of the teeing() method and you need to know your Collector API pretty well to write them. That being said, this collector is very useful when you need to apply two different algorithms on the same stream without going through it twice.
+
+```java
+var strings = List.of("1", "2", "three", ...);
+// first return the conversion
+Function<String, Stream<Integer>> parseIntSuccess = s -> {
+    try {
+        return Stream.of(Integer.parseInt(s));
+    } catch (Exception _) {
+        return Stream.empty();
+    }
+};
+
+// Second return the conversion
+Function<String, Stream<Integer>> parseIntFailure = s -> {
+    try {
+        var _ = Integer.parseInt(s);
+        return Stream.empty();
+    } catch (Exception e) {
+        return Stream.empty(e);
+    }
+};
+
+// specify the result
+record Result(List<Integer> parsingResult, List<Exception> e) {}
+
+// then collect the result
+var result = strings.stream()
+        .collect(Collectors.teeing(
+            flatMapping(parseIntSuccess, toList()),
+            flatMapping(parseIntFailure, toList()),
+            Result::new
+        ));
+```
+
+One last word; avoiding the streaming of your data twice is especially useful when your streaming can only be done once, like you're streaming an I/O source for instance. And you need to avoid buffering everything in memory. In that case, the teeing() collector may be extremely useful.
+</details>
+
+## 345. How many objects are there in a Stream?
+<details>
+  <summary>Short Answer</summary>
+Zero
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+The Stream is a pipeline that pulls objects from a source and pushes them to a downstream or a terminal operation. So the rule is, there is no object in a Stream. That being said, some streams are managing an internal mutable state that may be storing the elements it consumes for processing. That's the case of the `distinct()` operation that stores the element of the stream in a `Set` and the `sorted() operation that needs to store them before sorting them. But a mapping, a filtering, a flat-mapping, all these regular operations do not store any object.
+
+```java
+var ints = List.of(1, 2, 3);
+ints.stream()   // empty
+    .map(n -> n * 2)  // empty
+    .filter(n -> n <= 5>)  // empty
+    .flatMap(n -> Stream.iterate(0, p -> p < n, p -> p + 1))  // empty
+    .distinct()  // buffer!
+    .toList()  // no more stream
+```
+
+One last word; this feature makes the Stream API very powerful. A Stream can consume a reasonable amount of memory while still being able to process very large amounts of data, much larger than what you could store in the memory of your application.
+</details>
+
+## 346. How can you create a pre-filled List?
+<details>
+  <summary>Short Answer</summary>
+There is a method for that.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+You can just call `List.of()` and pass the elements you need in that list. Just be aware that there are restrictions on the implementation you get. First, you cannot have null values in this list. Why would you put null values in a list? And then the list you get is non-modifiable. The implementations you get are specific to these factory methods and optimized in several ways so that the operations on these lists are fast. And by the way, the implementations you get are also Serializable.
+
+```java
+var empty = List.of();
+var singleton = List.of(1);
+// NullPointerException
+var nope = List.of(1, null);
+// UnsupportedOperationException
+var neither = singleton.add(2);
+```
+
+One last word; this `List.of()` factory method was added in JDK9 as part of the Convenience factory methods for Collections feature. So there is an equivalent method for `Set` and even if it's not mentioned in the name of the feature also for `Map`s.
+</details>
+
+## 347. What is hashcode collision?
+<details>
+  <summary>Short Answer</summary>
+Something that can happen when two different objects have the same hash code.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+From a technical point of view, a hashcode is an int encoded on 32 bits, and you can have way more different objects than 2^32. So there has to be collisions. By the way, that's the reason why the specification says that `two objects that are equals need to have the same hash code` but the opposite is not true. In fact, it cannot be true. Having hash collisions can have unexpected effects on your application, including bad effects. For instance, if you store your objects in a Set, they are actually added to an internal Map where the keys are the hashcode of these objects. In case of many collisions, calling `contains()`, for instance, may not be an `O(1)` operation anymore, but an `O(log(n))`. Not that bad, but still not as fast.
+
+One last word; one more reason to avoid parallel streams on Set is that if you have too many collisions, your set may not be split properly, and going parallel may hurt your performance instead of improving it.
+</details>
+
+## 348. What is dependency inversion?
+<details>
+  <summary>Short Answer</summary>
+Inversion means that the dependency between two modules, for instance, at compile time is the opposite of the dependency at runtime.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+You may be wondering how is this even possible? Well, it's actually very simple and very common too. If you have a module A that uses some classes of a module B, then A depends on B at compile time and also at runtime. If you want to make B depends on A at compile time, then what you need to do is create an interface in A with what A needs from B, and this interface can use records to transport the data from B to A. And then B needs to implement this interface. Now, B depends on A at compile time. This is exactly how the JDBC API works for instance. Most of what it contains are interfaces implemented by drivers that are specific to the database you're using.
+
+```java
+
+```
+
+One last word; the nice thing with this approach is that when you need to update B for whatever reason, there is no need to recompile A. Why? Because A does not even know B. One less pain point in your application.
+</details>
+
+## 349. What is the first thing a constructor does?
+<details>
+  <summary>Short Answer</summary>
+It calls another constructor. 
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+You can issue this call manually, which is handy if you need to call a specific constructor, either from the same class with `this()` or from the superclass with `super()`. And if you do not write this code yourself, then a call to `super()` is added for you by the compiler. Reason why, if your superclass does not have a no-arg constructor, you need to call one by hand or suffer a compiler error. If you don't write any constructor, then the compiler adds one for you that does not take any argument and that just calls `super()`.
+
+```java
+class A extends B {
+    A() {
+        super(); // too bad
+        if (isInvalid) {
+            throw new IllegalArgumentException();
+        }
+    }
+}
+```
+
+One last word; you cannot prevent the execution of these super constructors, and it can be an overhead if in the end you decide not to create this object because the arguments you get are not valid. Well, until now, because this change in JDK25, you can now call `super()` whenever you want, but that will be for another time.
+</details>
+
+## 350. What is the JavaDoc?
+<details>
+  <summary>Short Answer</summary>
+A very handy tool to write and render the documentation of your code because you always write some documentation for your code, don't you? 
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+From the beginning, Java thought about documenting all the elements you can write: classes, interfaces, and the like. You can write your JavaDoc in special comments and use special tags to document what the method is doing, what are the parameters it takes and what is their users or what exceptions it may throw. You can add some Java do on classes, methods, fields, but also on packages, using a special file called `package-info.java` very handy. All the JDK JavaDoc is written in that way, and you can check it out, for examples.
+
+```java
+/**
+ * The root interface in the <i>collection hierarchy</i>. A collection represents a group of objects, known as its <i>elements</i>.
+ *
+ * @param <E> the types of elements
+ *
+ * @author Josh Bloch
+ * @author Neal Gafter
+ */
+interface Collection<E> extends Iterable<E> {
+    /**
+     * Returns {@code true} if this collection contains no elements.
+     *
+     * @return {@code true} if this collection contains no elements
+     */
+    boolean isEmpty();
+}
+```
+
+```java
+class ArrayList<E> implements List<E> {
+    /**
+     * The size of the ArrayList (the number of elements it contains).
+     *
+     * @serial 
+     */
+    private int size;
+}
+```
+
+```java
+// in the package-info.java file in the corresponding package
+
+/**
+ * This package contains various utility classes for my application.
+ */
+package com.myapp.util;
+```
+
+One last word; back in the days it was written in HTML and it was great because you could read it from a browser. Now you can also write it in Markdown. That's a feature from JDK23, but that will be for another time.
+</details>
+
+## 351. How can you run a parallel Stream in a specific pool of threads?
+<details>
+  <summary>Short Answer</summary>
+There is a pattern for that.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+The fact is this pattern is a little hidden. As you know, a parallel stream runs in a `Common Fork/Join Pool` by default. There is only one such pool in your application, and the number of threads is set to the number of virtual cores that you have on your CPU. There may be situations where you need to decrease this number of threads because you want to keep some CPU cycles for other things than running your parallel streams. You can do that with a JVM option called `java.util.concurrent.ForkJoinPool.common.parallelism`. If you set this property to 3, it will create three threads in a Common Fork/Join Pool on your application. So, your parallel streams will work on three threads. But, you can do better. If you run a stream in a thread that is part of a Fork-Join Pool and this stream is a parallel stream, then it will run in this Fork/Join Pool and not the Common Fork/Join Pool. So, the trick is to create a Callable that will carry your parallel stream computation and submit this Callable to a Fork/Join Pool that you created yourself, and that's it.
+
+```bash
+# restricts the size of the Common Fork/Join pool to 3
+java -Djava.util.concurrent.ForkJoinPool.common.parallelism=3 MyParallelStreamComputation
+```
+
+```java
+Callable<Map<String, Data>> task = () -> {
+    data.parallelStream()
+        .map(...)
+        .filter(...)
+        .collect(...)
+};
+var forkJoinPool = new ForkJoinPool(3);
+forkJoinPool.submit(task);
+```
+
+One last word; Is it a good idea? Well, you need to think about it very carefully because having a gazillion Fork/Join Pool in your application hammering your CPU like crazy, is most certainly a very, very bad idea. Does running your stream in parallel bring better performance to your application? When it comes to performance, measure. Don't guess.
+</details>
+
+## 352. What is the difference between ByteBuffer and MemorySegment?
+<details>
+  <summary>Short Answer</summary>
+They are not the same.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+ByteBuffer is a class from Java 4 designed in 2002 that gives you access to the off-heap memory of your application. Memory Segment is an interface from Java 22, from 2024, that kind of does the same thing. A ByteBuffer has a 32-bit indexes, where memory segment has 64-bit indexes. You cannot free a ByteBuffer yourself, which may lead to OutOfMemoryExceptions without you being able to do anything about it. A MemorySegment is obtained from an Arena that is auto-closable, so you can free them on demand. You can control how different threads can access your MemorySegment and even prevent any other thread than yours to access them with ByteBuffer, when it comes to concurrency, you're on your own.
+
+```bash
+ByteBuffer            MemorySegment
+32 bits indexes       64 bits indexes
+Freed by the GC       Freed on demand
+Open to concurrency   Controlled concurrent access
+```
+
+One last word; in case I have not been explicit enough, using ByteBuffer in any place other than legacy code is really not a good idea. Learn how to use Arenas, MemorySegments, and MemoryLayouts. It will be much better for your application. I even have a JEP Cafe on this subject.
+</details>
+
+## 353. What is a ScopedValue?
+<details>
+  <summary>Short Answer</summary>
+A value that you can pass around in your application without relying on method arguments.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+Passing elements from one method to another method without using method parameters is something you need when you write callbacks. `ThreadLocal` variables were created exactly for that, to pass elements from one servlet to the other that was in Java 2 in 1998. ThreadLocal variables have several issues; They are mutable, they are bound to a thread. You need to call `remove()` on them when you're done with them, and if you don't, the next task this thread will execute will have access to it, something you want to avoid. ScopeValues are a replacement that is bound to a task namely, a Runnable or a Callable, and not bound to any thread. You don't need to remove them because they are not transmitted to other threads unless created by a structured task scope. So, they cannot escape your method call.
+
+```java
+static final ScopedValue KEY_1 = ScopedValue.instance();
+static final ScopedValue KEY_2 = ScopedValue.instance();
+Runnable task = () -> ...;
+// You can create several bindings
+// The bindings ca no escape the task
+ScopedValue
+        .where(KEY_1, "Value 1")
+        .where(KEY_1, "Value 2")
+        .run(task);
+```
+
+One last word; be careful because the API does not give you thread safety. So, if you share a mutable ScopedValue among different threads, then you need to manage the synchronization yourself. Sticking to non-modifiable ScopedValues is probably your best choice.
+</details>
+
+## 354. How can you explore a tree of directories?
+<details>
+  <summary>Short Answer</summary>
+There is a pattern for that.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+There are actually two patterns. You can use the method `Files.directoryStream()` that gives you access to all the entries of a directory. You can then filter them with a regular expression, and when you find a directory, recursively explore this directory. Using recursion is always a little dangerous. You can get StackOverflowExceptions, while doing that something you usually want to avoid. So, there is another method, `Files.walkFileTree() that takes a `FileVisitor` as a parameter. It implements a `Visitor` pattern, so you can give a callback for every entry that is found. It visits the content of a directory, and when it finds a subdirectory, you can tell this method to explore this subdirectory or not.
+
+```java
+var rootDir = Path.of("");
+try(var entries = Files.newDirectoryStream(rootDir)) {
+    for (var entry : entries) {
+        var isDirectory = Files.isDirectory(entry);
+        var isFile = Files.isRegularFile(entry);
+    }
+}
+```
+
+```java
+try(Files.walkFileTree(rootDir, new SimpleFileVisitor<>())) {
+    FileVisitResult preVisitDirectory(dir, dirAttrs) {}
+    FileVisitResult postVisitDirectory(dir, ioException) {}
+    FileVisitResult visitFile(file, fileAttributes) {}
+    FileVisitResult visitFileFailed(file, ioException) {}
+});
+
+enum FileVisitResult{
+    CONTINUE,
+    TERMINATE,
+    SKIP_SUBTREE,
+    SKIP_SIBLINGS
+}
+```
+One last word; you need to keep in mind that a file system can be modified while you explore the content of a directory. So, you can come across weird errors, if it takes too long. Competing with other processors accessing your file system, that's another level of concurrency issues.
+</details>
+
+## 355. What is an EnumMap?
+<details>
+  <summary>Short Answer</summary>
+A Map.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+An EnumMap is a map where the keys are the values of a single enum that allows for a very efficient implementation both memory-wise and CPU-wise. Since the enumerated values are known before the map is created, and these values have an index, you can simply store the values in an array which size is known upfront. You will never need to resize this array once it has been created. And using this index makes it so that you do not need to compute any hash code.
+
+```java
+enum DayOfWeek{
+    MON, TUE, WED, THU, FRI, SAT, SUN
+}
+var map = new EnumMap<DayOfWeek, Data>(DayOfWeek.class);
+```
+One last word; this map does not support null keys. Why would you put a null key in a map? But it does support null values(come on, seriously?). Trying to add a null key will throw a `NullPointerException, but you can still check for the presence or try to remove a null key and get false as a result.
+</details>
+
+## 356. How can you use Markdown in your JavaDoc?
+<details>
+  <summary>Short Answer</summary>
+There is a pattern for that.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+Writing JavaDoc may not be your thing, but it is still a very interesting feature of the Java platform. In 1995, people chose to use HTML for the JavaDoc, and it was probably an excellent choice at the time. And somehow that's still the case, you can easily read your JavaDoc in a browser. But 1995, that was a long time ago, and nowadays writing Markdown is probably easier to do and as efficient. To write some Markdown code in your JavaDoc, all you need to do is to add this triple slash(///) at the beginning of each line. Several Markdown features are supported, including titling and links, which is great.
+
+```java
+/**
+ * This service takes a String and returns an instance of User corresponding to this index and name.
+ *
+ * @param index the index of the user
+ * @param name the name of the user
+ * @return the instance of corresponding user
+ */
+User service(int index, String name) {
+    return new User("Jose");
+}
+```
+
+```java
+/// ## Definition of the Service
+/// This service takes a [java.lang.String] and returns an instance of [org.myapp.model.User] corresponding to this index and name.
+/// ## How to use the Service
+/// ### A first, simple case
+/// ### A more complex case
+/// @param index the index of the user
+/// @param name the name of the user
+/// @return the instance of corresponding user
+/// 
+User service(int index, String name) {
+    return new User("Jose");
+}
+```
+
+One last word; you can also include snippets of code in your JavaDoc, so that the examples you show are tested during the building process of your application. Another great addition to this old feature. But that will be for another time.
+</details>
+
+## 357. How should you check if a value is null?
+<details>
+  <summary>Short Answer</summary>
+There is a pattern for that.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+You can always write a test with equal equal(==) that will work of course, but a better pattern is to call `Objects.requireNonNull()`. It has three advantages. First, this simple factory method throws the `NullPointerException` for you explicitly. Second, it returns the object you pass, so you can inline this null check with the use of the variable you want to check. And third, it can take a custom error message if you want to give context or information to debug the problem.
+
+```java
+boolean isEmpty(String value) {
+    return value.isEmpty();
+}
+```
+
+```java
+boolean isEmpty(String value) {
+    return Objects.requireNonNull(value).isEmpty();
+}
+```
+
+```java
+boolean isEmpty(String value) {
+    return Objects.requireNonNull(value, "You gave me a null value").isEmpty();
+}
+```
+
+```java
+boolean isEmpty(String value) {
+    return Objects.requireNonNull(value, () -> "You gave me a null value").isEmpty();
+}
+```
+
+```java
+boolean isEmpty(String value) {
+    return Objects.requireNonNullElse(value, "Default value").isEmpty();
+}
+```
+
+```java
+boolean isEmpty(String value) {
+    return Objects.requireNonNullElse(value, () -> "Default value").isEmpty();
+}
+```
+
+One last word; there is also an overload of this method that can return a default value instead of throwing the `NullPointerException`. You can pass this value as an argument, or if it's expensive to create, pass a Supplier to build it. Neat.
+</details>
+
+## 358. Is Collections.unmodifiableList() non-modifiable?
+<details>
+  <summary>Short Answer</summary>
+That's a trick question. 
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+The answer should be an obvious yes, and in a way it is. `Collections.unmodifiableList()` returns a list that you cannot modify, calling `add()`, `remove()`, `clear()`, and all these kind of methods will throw an `UnsupportedOperationException`. But this non-modifiable list is actually a wrapper on the list you pass as an argument. No defensive copy is made. So, if you keep a reference to this list and modify it, you will see these modifications in the unmodifiable list.
+
+```java
+var ints = Arrays.asList(1, 2, 3, 4, 5);
+var unmodifiableInts = Collections.unmodifiableList(ints);
+IO.println(unmodifiableInts);
+// > [1, 2, 3, 4, 5]
+
+// UnsupportedOperationException
+unmodifiableInts.set(1, 20);
+
+ints.set(1, 20);
+// > [1, 20, 3, 4, 5]
+```
+
+One last word; whatever you do, if you need an unmodifiable list built from a regular list, you need to make a defensive copy. `Collections.unmodifiableList()` is a very good first choice, but you can also use one of the `List.of()` patterns.
+</details>
+
+## 359. How can you use regular expressions?
+<details>
+  <summary>Short Answer</summary>
+There are several classes for that.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+All these classes are in the `java.util.regex` package. First, you need to create a `Pattern` with the Pattern class using the `of()` factory method. You can use this pattern to split the text lazily with the `splitAsStream()` method, passing this text as an argument. What you get is a stream that you can analyze with the traditional stream patterns. Second, you can also call `matcher()` and pass your text to match against this pattern. What you get is a `Matcher` object. You can then call `matcher.find()` and then `matcher.group()` to jump from one matching subsequence to the other. Calling `matcher.start()` and `matcher.end()` gives you the position of this subsequence in the text. And you can also call `replace()` on this matcher to replace the matching subsequences with what you need.
+
+```java
+var pattern = Pattern.of("[a-z]");
+// someText is split lazily
+Stream<String> stream = pattern.splitAsStream(someText);
+```
+```java
+var pattern = Pattern.of("[a-z]");
+var matcher = pattern.matcher(someText);
+while (matcher.find()) {
+    var element = matcher.group();
+    var startIndex = matcher.start();
+    var endIndex = matcher.end();
+}
+var replaced = matcher.replace(replacement);
+```
+
+One last word; the regular expression engine also supports groups and named groups with method to explore them directly. But that will be for another time.
+</details>
+
+## 360. How can you gather statistics on a Stream?
+<details>
+  <summary>Short Answer</summary>
+There is a Collector for that.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+There are actually three, depending on the type of the statistics you need. You can get them with the `summarizing()` factory methods from the `Collectors` class. There is one for integers, one for longs, and one for doubles. So, `summarizingDouble` is for double. There return is summary statistics object, one for each type, that computes the `count()`, the `sum()`, the `min()`, the `max()`, and the `average()` in one pass over your data.
+
+```java
+var stream = ...;
+DoubleSummaryStatistics stats = stream.collect(Collectors.summarizingDouble(someToDoubleFunction));
+long count = stats.getCount();
+long sum = stats.getSum();
+long min = stats.getMin();
+long max = stats.getMax();
+double average = stats.getAverage();
+```
+
+One last word, these summary statistics objects are in fact Consumers, and all the statistics are computed in the `accept()` method of these Consumers. So, if you need other statistics than these, copying this pattern is very easy. You just need to create your own Summary Statistics object, and copy the pattern from one of the factory methods. And it even supports parallelism.
+</details>
+
+## 361. Should you comment your code?
+<details>
+  <summary>Short Answer</summary>
+No.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+If you need comments to explain your code, it means that it is not readable enough. So, instead of writing comments, you should work on the readability of your code. That should be your first reflex and it's much harder to do. Comments are not documentation. Documentation is written using the Javadoc and Javadoc is of paramount importance. It should be precise, accurate, it should give you example on how to use your code and explain what is happening if something goes wrong. Your Javadoc should be proofread during your code reviews to make sure it has the right level of quality. Comments, on the other hand, live their own life and your code also lives its own life, but both are not always related. Sometimes comments are just useless and sometimes you fix bugs in your code or change what it's doing, leaving the comments as they are. And at some point, what the comments tell you about your code is no longer related to what your code is actually doing. So, no one reads them anymore and they just stay there rotting, polluting your code base.
+
+```java
+class User {
+    String firstName;
+    String firstName() {
+        // returns the name
+        if (this.firstName != null) {
+            return this.firstName;
+        } else {
+            return "";
+        }
+    }
+}
+```
+
+One last word; there are exceptions to this rule. For instance, when you need to give some detail on a complex algorithm, your code implements. You can check the `ConcurrentHashMap` or the `ConcurrentSkipListMap` classes, for instance.
+</details>
+
+## 362. How can you know what thread is running your code?
+<details>
+  <summary>Short Answer</summary>
+There is a method for that.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+The method you need to call is a factory method from the `Thread` class called `currentThread()`. It gives you a reference on the thread that is running your code. There are several cases where you need to call this method apart from debugging or analyzing purposes. If you execute a long-running task and you need to manage the interruption of this task yourself, then you need to monitor the interrupted status of the thread that is executing your task. You can do that by calling `Thread.currentThread().isInterrupted()`. If this method returns true, then you need to stop your task.
+
+```java
+class Main {
+    void main() {
+        var currentThread = Thread.currentThread();
+    }
+}
+// For a platform thread
+// > Thread[#3,main,5,main]
+
+// For a virtual thread
+// > VirtualThread[#42]/runnable@ForkJoinPool-1-worker-1
+```
+
+One last word; `Thread.currentThread()` returns the platform thread or the virtual thread that is running your task. And in that case, you don't have access to the underlying platform thread.
+</details>
+
+## 363. How can you generate the JavaDoc?
+<details>
+  <summary>Short Answer</summary>
+There is a tool for that.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+The Javadoc tool is a tool that you have in the standard JDK distribution and that you can use even if most of the time your IDE uses it for you. Javadoc can analyze all your class files and will take the so-called Javadoc comments to generate a set of HTML pages that you can distribute along with your application. As all the tools available in the JDK, Javadoc is also available as a service that you can use programmatically. You need to check the `ToolProvider` interface for more detail. To invoke this tool, just type `javadoc` then give it some option. The trick is the Javadoc tool works with your source files and not your class files because it needs to read them for comments. Then it generates a lot, I mean really a lot! of HTML files and JavaScript files that contains the documentation of your application.
+
+```java
+record User(String name, int age) {}
+// > javadoc java/dev/User.java
+// Generating java/dev/User.html...
+// Generating java/dev/package-summary.html...
+// Generating java/dev/package-tree.html...
+// Generating overview-tree.html...
+// Generating allclasses-index.html...
+// Generating index-all.html...
+// Generating search.html...
+// Generating index.html...
+// Generating help-doc.html...
+```
+
+One last word; Javadoc is an old tool but that still gets some attention. You can now write your Javadoc using markdown and add external snippets of code in it that can be tested when you build your application. But that will be for another time.
+</details>
+
+## 364. What is a Template Method?
+<details>
+  <summary>Short Answer</summary>
+A pattern from the gang of four.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+The template method pattern is very simple. It is about creating an abstract class with an abstract method. This abstract method is the template method itself. Then, you need to extend your abstract class and provide a specific implementation for the template that is used at runtime by all the other methods of your abstract class. Both `ArrayList` and `LinkedList` apply this pattern. They extend `AbstractList` and `AbstractCollection`. AbstractCollection has two abstract methods; `size()` and `iterator()`. And one method that throws an `UnsupportedOperationException`; `add(E e)`, that takes an element. So, implementing your own collection is very simple. You just need to extend AbstractCollection, implement `size()` and `iterator()`, and override `add(element)` if what you want to make is a mutable implementation. AbstractList extends AbstractCollection, and adds one abstract method, `get(int index)`, and three methods that throw an `UnsupportedOperationException`, `set(int, E)`, `remove(int)`, and `add(int, E)`. Same, implementing List is super simple. Just extend AbstractList. You have three methods to implement and four to override if you need to make it a mutable implementation.
+
+```java
+abstract class AbstractCollection<E> {
+    abstract Iterator<E> iterator();
+    abstract int size();
+    boolean add(E e) {
+        throw new UnsupportedOperationException();
+    }
+}
+```
+
+```java
+abstract class AbstractList<E> extends AbstractCollection<E> {
+    abstract E get(int index);
+    
+    // the following throw UnsupportedOperationException
+    E set(int index, E e) {}
+    E remove(int index) {}
+    boolean add(int index, E e) {}
+}
+```
+
+```java
+class ArrayList<E> extends AbstractList<E> {
+    // implements iterator() and size() overrides add(E)
+}
+class LinkedList<E> extends AbstractList<E> {
+    // implements iterator() and size() overrides add(E)
+}
+```
+
+One last word; the same goes for Maps. There is one class to extend, AbstractMap, with one abstract method, `entrySet()`. The two methods you need to override to make your implementation mutable are `put(K, V)` and `Entry.setValue()`. This template method pattern is really great and it can really make your life much easier.
+</details>
+
+## 365. How does the calling of super() work?
+<details>
+  <summary>Short Answer</summary>
+It calls the super constructor of your class.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+Calling an other constructor is the first thing any constructor does. It can be a constructor from the same class or a constructor from a superclass. This pattern is actually problematic. As you can access fields from a subclass, when you are in a constructor from a superclass. And these fields may not be initialized even if they are final. So, it means that during the construction process of an object, you can observe the transition of a final field from their initial null value to their final value, which kind of defeats the point of being final. The `JEP 513` changed that. You can now execute some code before the call to the other constructor. Meaning that you can and you should conduct any initialization of your object before calling the super constructor. There is a restriction on what you can do. You cannot call any instance method before calling this super constructor. Eliminating the risk of executing some code from a subclass.
+
+```java
+class A {
+    A() {
+        IO.println("Message = " + message());
+    }
+    String message() {
+        return "Hello";
+    }
+}
+```
+```java
+class B extends A {
+    final String message;
+    B(String message) {
+        this.message = message;
+    }
+    String message() {
+        return this.message;
+    }
+}
+// > var b = new B();
+// Message = null 
+```
+```java
+class B extends A {
+    final String message;
+    B(String message) {
+        this.message = message;
+        super();
+    }
+    String message() {
+        return this.message;
+    }
+}
+// > var b = new B();
+// Message = Hello 
+```
+
+One last word; instead of letting the compiler calling the super constructor first for you, the good practice is to not call `super()` explicitly after you have initialized your object. One less place for bugs to hide. Neat.
+</details>
+
+## 366. What is the difference between an Executor Service and a Fork / Join Pool?
+<details>
+  <summary>Short Answer</summary>
+A Fork / Join Pool is an Executor Service.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+Executor service is an interface and Fork / Join Pool is a class that implements this interface. The first interface is the Executor interface. It defines the submission of a Runnable and the Executor Service extends Executor. It supports Callables, returns the Future on a submission of a Callable, and defines two shutdown strategies. Usually, the implementation of Executor Services have one wait list in which they store the tasks you submit and a pool of thread. Each thread takes a task from this wait list and executes it. A Fork / Join Pool has one wait list per thread and each task is supposed to split itself, spawning at least two other tasks that are stored in the same wait list. Then, it implements the work stealing pattern, meaning that if a thread has an empty wait list, it can steal a task from another wait list. This has a cost when it comes to visibility issues and cache misses, but is necessary to keep all your threads busy.
+
+```java
+interface Executor {
+    void submit(Runnable task);
+}
+interface ExecutorService extends Executor {
+    <T> Future<T> submit(Callable<T> task);
+    void shutdown();
+    List<Runnable> shutdownNow();
+}
+class ForkJoinPool implements ExecutorService {}
+```
+
+One last word; there are two Fork / Join Pools running in your JVM. The Common Fork / Join Pool that runs your parallel streams and another one that runs your virtual threads. And they don't work exactly in the same way. But that's for for another time.
+</details>
+
+## 367. How does takeWhile() work?
+<details>
+  <summary>Short Answer</summary>
+It acts like a door that closes on a Predicate.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+`takeWhile()` is an intermediate method of the Stream interface, and it takes a Predicate as a parameter. If your stream is not parallel, then it will evaluate the predicate for all the elements one by one. As long as the predicate evaluates to true, the elements are pushed to the downstream, but when it becomes false, then the stream is interrupted. If your stream is not ORDERED, and possibly parallel, then `takeWhile()` may push any subset of elements to the downstream that matches the predicate and interrupt the stream when it finds an element that does not. If your stream is ORDERED, then this subset is the longest sequence of matching elements, starting at the first element of your stream.
+
+```java
+var ints = Stream.of(2, 4, 1, 0, 1, 6, 3, 6, 2, 7);
+ints
+    .stream()
+    .takeWhile(n -> n < 6)
+    .toList();
+// > [2, 4, 1, 0, 1]
+```
+
+One last word; in the case of an ORDERED parallel stream, `takeWhile()` has to manage an internal counter, shared among the different threads running your stream. It will hurt your performance. One more reason to think twice before using parallel streams.
+</details>
+
+## 368. What is padding?
+<details>
+  <summary>Short Answer</summary>
+Padding is about adding unused bytes in memory.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+It has to do with memory alignment. Some CPUs are connected to their memory in a way that makes accessing some words, like 32-bit words or 64-bit words, faster if they are stored at addresses divisible by 4 or by 8. The JVM knows that and to optimize the read and write performance adds bytes when needed to make sure that all the old data is properly aligned in memory. It can also optimize the layout of your object in memory to make sure that padding is kept minimal.
+
+```java
+class Key {
+    String name;
+    short value;
+    byte flag;
+    int age;
+    byte data
+}
+```
+
+| Address      | Byte 0      | Byte 1 | Byte 2 | Byte 3      |
+|--------------|-------------|--------|--------|-------------|
+| 0x00BDE000   | Ref to name | Ref to name | Ref to name | Ref to name |
+| 0x00BDE004   | value       | value  | flag   | padding     |
+| 0x00BDE008   | age         | age    | age    | age         |
+| 0x00BDE00C   | data        |        |        |             |
+| 0x00BDE010   |             |        |        |             |
+
+One last word; when you need to read a file that is not using any padding, you may come across alignment issues. Reason why, you can specifically read unaligned data with the Memory API from JDK 22. And that will be for another time.
+</details>
+
+## 369. How can you compare objects for equality?
+<details>
+  <summary>Short Answer</summary>
+Your best choice is to use the `Objects.equals()` factory method.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+Of course, the most obvious choice would be to call `a.equals(b)`, but it can fail if a is null. So, if you want your code to be robust, you first need to check if a is null, and then if b is also null, then you may want to return true. And suddenly, something that was supposed to be super simple becomes a mess in your application. JDK 7 added this small utility class: `Objects`, that has an `equals()` method that does all this for you. It's not a revolution, it's just so much simpler.
+
+```java
+var u1 = null;
+var u2 = new User(...);
+var equals = u1.equals(u2); // :(
+var equals = Objects.equals(u1, u2); // :)
+```
+
+One last word; Objects also has a `hashCode()` method that takes an object, and if this subject is null, it returns zero. Simple and useful.
+</details>
+
+## 370. What are the SOLID principles?
+<details>
+  <summary>Short Answer</summary>
+A set of principles for object-oriented programming that you should know and follow.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+The SOLID acronym was coined by Ken Beck, author of several books on Test Driven Development and eXtreme Programming, among others. The `S` is for the Single Responsibility Principle. One reason to change your class or your method. One stakeholder, two is already too much. The `O` is the Open-Closed Principle. Open for extension and Closed for modification. You can implement it with composition, which makes it even more powerful. The `L` principle is the Liskov Substitution Principle, named after Barbara Liskov. It defines what inheritance is. If an instance of B behaves the same as an instance of A, to a point that you cannot tell which one is which, then B extends A. `I` is for Interface Segregation. In a nutshell, an interface should not have methods that you don't use. And `D` is for Dependency Inversion. If a module A depends on a module B at runtime, then B should depend on A at compile time. The two dependency arrows are opposite. This is what inversion means.
+
+```md
+SOLID Principle:
+S: Single Responsibility Principle
+O: Open-Closed Principle
+L: Liskov Substitution Principle
+I: Interface Segregation Principle
+D: Dependency Inversion Principle
+```
+
+One last word; all this may sound like old stuff, and it is. These principles have been around for more than 25 years, but applying them will help you make your legacy code much easier to manage.
+</details>
+
+## 371. What is a megamorphic call?
+<details>
+  <summary>Short Answer</summary>
+A method call that the JVM has a hard time optimizing.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+You write your code against interfaces, right? Like when you need a List, you make it a List and not an ArrayList. So, it means that at run time, the JVM needs to find the implementation you're calling because it's not in the bytecode. This is called a `virtual call` and it happens every time you call a method that can be overridden somewhere. But then, if the JVM realizes that at runtime, a particular virtual call always called the same implementation, then it can optimize things and make it like a non-virtual call, a regular call, which will be much faster. A megamorphic call is a call that cannot be optimized in that way because you have too many overriding versions of the method you're calling, and the JVM needs to check which one you are calling. And the bad news is that too many starts at three. So, a megamorphic call is a virtual call with at least three possible implementation.
+
+```java
+abstract class Shape {
+    abstract double surface();
+}
+class Square extends Shape {
+    double surface() { ... }
+}
+class Rectangle extends Shape {
+    double surface() { ... }
+}
+class Triangle extends Shape {
+    double surface() { ... }
+}
+
+double computeSurface(List<Shape> shapes) {
+    return shapes.stream().mapToDouble(Shape::surface).sum();
+}
+```
+
+One last word; with sealed types and pattern matching, you can eliminate all the virtual calls of your application. Will it be better performance-wise? Well, it is something worth checking. When it comes to performance, measure, don't guess.
+</details>
+
+## 372. How can you read and write unaligned elements?
+<details>
+  <summary>Short Answer</summary>
+There is a pattern for that.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+You need to use the `Memory API` for that, from the Panama project. First, you create an Arena and then create a Memory Segment from this Arena. This Memory Segment can represent a portion of memory from the off-heap memory of your application or an array that lives on the heap. You can use the `set()` method to write some data to this Memory Segment that takes a Memory Layout, and offset and of course, a value. The Memory Layout and the offset you pass needs to be compatible. If you need to write some unaligned data, then you need to pass an unaligned Memory Layout. If you don't and you try to write at an offset that is not aligned, then you will get an IllegalArgumentException.
+
+```java
+try(var arena = Arena.openConfined()){
+var segment = arena.allocate(10);
+    segment.set(
+        OfInt.JAVA_INT,
+        0L, // aligned object
+        10);
+    segment.set(
+        OfInt.JAVA_INT,
+        1L, // unaligned object -> IllegalStateException
+        10);
+    segment.set(
+        OfInt.JAVA_INT_UNALIGNED,
+        1L, // unaligned offset -> OK
+        10);
+    
+}
+```
+
+One last word; you need to keep in mind that there is an overhead when you read and write unaligned data. So, you should use this feature only if you absolutely need it.
+</details>
+
+## 373. How much memory does an object consume?
+<details>
+  <summary>Short Answer</summary>
+It depends.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+It really depends!. It is even dependent on the machine that is running your application. If it is a 64-bit machine, odds are that an object will need more memory than on a 32-bit machine. Each object has a header that is made of one 32-bit and one 64-bit words on 32-bit machine or on a 64-bit machine, but your application lives in a heap up to 32 GB and two 64-bit words on 64-bit machine and heaps above 32 GB. Then there is a second overhead, which is due to alignment. For instance: an integer in an application that has a 64 GB heap on the 64-bit machine takes two 64-bit words. Then the integer itself, so 32 bits, and then 32 more bits of padding to preserve alignment. That's six 32-bit words, to carry one 32-bit word of information.
+
+```java
+var index = Integer.valueOf(10);
+
+// 64 bits OS with > 32GB heap
+// Header: 64 + 64 bits
+// value = 10: 32 bits
+// alignment: 32 bits
+// total = 6 x 32 bits
+
+// 32 bits OS or 64 bits OS with < 32GB heap
+// Header: 32 + 64 bits
+// value = 10: 32 bits
+// Already aligned
+// total = 4 x 32 bits
+```
+
+One last word; there are two ways of optimizing that. The first one is the project `Lilliput`, which consists in drastically reducing the size of the header, and the second one is the `Valhalla` project that removes the header completely for Value objects. But that will be for another time.
+</details>
+
+## 374. How can you add a snippet of code in your JavaDoc?
+<details>
+  <summary>Short Answer</summary>
+There is a pattern for that.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+There are actually several. The first one consists in adding the snippet directly in your Java doc comment. It's nice, it works well, but you cannot validate this snippet at runtime like it was a unit test. So, there is a better way which consists in including a region of a class. You reference that class with a class tag and then the region you want to include in your JavaDoc. This class needs to live in a snippet-files directory of the package where the class that references the snippet lives. On the one hand, it's convenient because your IDE can read this class and render your JavaDoc on the fly, but on the other hand, Maven will have a hard time running all these classes as unit tests. So, you can also use a special option when you run your JavaDoc tool, which is `--snippet-path`.
+
+```java
+/**
+ * The following method can be used in that way
+ * {@snippet :
+ *      var augmented = augment(List.of(1, 2, 3));
+ * }
+ */
+List<Integer> augment(List<Integer> ints) {
+    var newInts = new ArrayList<>(ints);
+    var element = ints.getLast();
+    newInts.add(element + 1);
+    return newInts;
+}
+```
+
+```java
+/// 
+/// The following method can be used in that way
+/// {@snippet
+///      file "AugmentTest.java"
+///      class AugmentTest
+///      region = "show-augment"
+/// }
+/// 
+List<Integer> augment(List<Integer> ints) {
+    var newInts = new ArrayList<>(ints);
+    var element = ints.getLast();
+    newInts.add(element + 1);
+    return newInts;
+}
+```
+
+```java
+// in a snippet-files directory
+public class AugmentTest {
+    public id sometMethod() {
+        // @start region = "show-augment"
+        var augmented = augment(List.of(1, 2, 3));
+        // @end
+    }
+}
+```
+
+One last word; and all this also works if you write your JavaDoc in Markdown. Neat.
+</details>
+
+## 375. What is an EnumSet?
+<details>
+  <summary>Short Answer</summary>
+A Set.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+An EnumSet is a set that can hold some values of a single enum. The implementation stores them in a bit vector, which is very efficient both memory-wise and CPU-wise. There are several factory methods that you can use to create an EnumSet. `allOf()` puts all the enum values in the Set. `noneOf()`, gives you an empty EnumSet of the right type. Then you can choose the values you want to add one by one, and then you have this `complementOf()` method that takes another Set and that gives you the complement of this other Set.
+
+```java
+enum Colors {
+    RED, YELLOW, GREEN, CYAN, BLUE, MAGENTA
+}
+var set = EnumSet.allOf(Color.class);
+// > [RED, YELLOW, GREEN, CYAN, BLUE, MAGENTA]
+
+var set = EnumSet.noneOf(Color.class);
+// > []
+
+var set = EnumSet.of(Color.RED, Color.BLUE);
+// > [RED, BLUE]
+
+var set1 = EnumSet.range(Color.RED, Color.CYAN);
+// > [RED, YELLOW, GREEN, CYAN]
+
+var set2 = EnumSet.complementOf(set1);
+// > [BLUE, MAGENTA]
+```
+
+One last word; an EnumSet is modifiable, but you cannot add null elements to it. Why would add null elements to a Set? Which is expected, since it can only contain value from enums and enums cannot have null values.
+</details>
+
+## 376. What is Context Switching?
+<details>
+  <summary>Short Answer</summary>
+Something you want to avoid.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+It has to do with concurrency. Doing too many context switches in an application is something that will hurt your performance badly. Reason why you need to avoid that. When a thread is running on one of the cores of your CPU, it is there with all the information it needs to run, the code, the data, and some other stuff. All this is stored in a cache and the registers of this core. This is what the context of this thread is. At some point, the operating system may decide to pause this thread and to give a hand to another one. So, all the data this thread uses is removed from the core to be brought back at a later time. Doing this takes in the order of 100 microseconds, which is quite a lot. It will happen, for instance, if this thread is executing some network call and is waiting for the data to be there, doing nothing. Reason why you should never do that with kernel threads.
+
+One last word; using Virtual Threads help you preventing context switching to happen, since blocking a virtual thread does not block the kernel thread that is running it. One less bug to take care of in your application.
+</details>
+
+## 377. What is a SUBSIZED stream?
+<details>
+  <summary>Short Answer</summary>
+A good candidate to be executed in parallel.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+SIZED means that you know how many elements the stream will process. For instance, a stream opened on any Collection is SIZED because you just need to call `size()` on the Collection to get this information. SUBSIZED means that if you split this stream in two sub-streams, then you still know how many elements each sub-stream will process. Not all Collections give you SUBSIZED streams. List do, if you split a list in two, you know how many elements you have in each sub-list, but Sets do not. Splitting a Set consists in splitting its internal array, and you do not know how many elements you have in the two sub-arrays you get. If you're unlucky, you may have zero element in the first one, and all the elements in the second one.
+
+One last word; splitting a source is what parallel streams do. So, do not use parallel streams with a source of data that is not easily splittable. And even if it is, think twice before using parallel streams. It may hurt your application instead of improving it.
+</details>
+
+## 378. How can you get the number of characters in a String?
+<details>
+  <summary>Short Answer</summary>
+You probably think that's an easy answer. Well, it's harder than what you think.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+It depends on what you call a character. You have a `length()` method on the String class. And if you check the JavaDoc carefully, you will see that it returns the number of Unicode Code Unit this String has. A Code Unit is used for 16-bit chars, but some Unicode characters may be encoded on two code units and even more than that. So, if your application is playing with characters encoded on two chars, then length does not return the number of characters of your string and you may end up with a string that displays only one character on your screen, but with a length of two or more.
+
+```java
+var string = "Hello";
+var length = string.length();
+// > 5
+
+var string = "🍉";
+IO.println("This is water melon: " + 🍉);
+// > This is water melon: 🍉
+var length = string.length();
+// > 2
+// \uD83C
+// \uDF48
+```
+
+One last word, there are two notions; Code unit, which is a char, and Code Point, which is an int. And not all values of this int are valid. That will be for another time.
+</details>
+
+## 379. How can you limit the number of concurrent requests?
+<details>
+  <summary>Short Answer</summary>
+That's the job of the Semaphore.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+There is indeed a `Semaphore` class in the JDK that you can use for that, and this is the nice way of doing that because your code is then saying what it does: "I want to limit the number of requests on this server". A wrong way of doing it would be to use a specific Executor Service for that and to fix the number of threads to your limit. It will also work, but it's a hidden way to achieve the same result, and it's dangerous for your application. But there is yet a third way, which consists in using a `Gatherer`. Stream your requests call `gatherer()`, pass a `Gatherers.mapConcurrent()`, which takes a max Concurrency integer and a mapper. Each mapping is executed in a Virtual Thread, perfect for IO requests, and the number of active mappings at a given time is limited by this max Concurrency integer. So, you have a free Semaphore doing the job for you internally.
+
+```java
+var semaphore = new Semaphore(10);
+try {
+    semaphore.acquire();
+    scope.fork(Service::readData);
+} finally {
+    semaphore.release();
+}
+```
+
+```java
+var executor = Executors.newFixedThreadPool(10);
+executor.submit(Service::readData);
+```
+
+```java
+var requests = List.of(/* your requests */);
+var result = requests.stream().gather(Gatherers.mapConcurrent(10, Service::readData)).toList();
+```
+
+One last word; do not use this pattern in a parallel stream because it will be a complete disaster. Stick to a normal stream, your code will be simpler and will work as intended.
+</details>
+
+## 380. How can you search for an element in a list?
+<details>
+  <summary>Short Answer</summary>
+There is a very good pattern for that.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+Of course, you can call `list.contains()`, which will tell you if the object you pass is present or not, or `indexOf()`, which will give you the first index of this object. These methods are slow because they scan all the elements of your list, one after the other, so if you have many elements in your list, it may take some time. If what you have is a list that was previously sorted, then you can call `Collections.binarySearch()`. It works if your objects are `Comparable`, or it can take a `Comparator` as an argument. The implementation uses a binary search algorithm that has a `log(n)` complexity. Two caveats. First, if your list is not sorted, it will not throw any exception and will return something, but it may take some time. Second, if the object you're looking for is present several times in the list, then you will get any one of the valid indexes.
+
+```java
+var ints = List.of(0, 2, 4, 6, 8);
+var isPresent = ints.contains(4);
+// > true
+```
+
+```java
+var ints = List.of(0, 2, 4, 6, 8);
+var isPresent = ints.indexOf(4);
+// > 2
+```
+
+```java
+var ints = List.of(0, 2, 4, 6, 8);
+var indexOf4 = Collections.binarySearch(4);
+// > 2
+
+var indexOf5 = Collections.binarySearch(5);
+// > -3
+```
+
+One last word; if the object is not in the list, then you will get `-index-1`, where index is the index at which this object would have been inserted without breaking the sorted order. Note that this number is negative to denote that the object was not found. And one very last word; Only use this pattern on `ArrayList` because this `log(n)` complexity is achieved only if you can access any element in constant time.
+</details>
+
+## 381. How can you compare arrays for equality?
+<details>
+  <summary>Short Answer</summary>
+There is a pattern for that.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+When you think about it, it can be a little more complex than what you may think at first. As you know, Array itself is an object in Java, so it has an `equals()` method. But, this `equals()` method compare the two references of the arrays. So, in that sense, an array can only be equal to itself. Most of the time, what you need is to compare the content of your arrays. Saying, two arrays are equal, if the elements they contain are equal and in the same order. So, what you need in that case is one of the `Arrays.equals()` method. These methods take two arrays and can also take indexes to compare only a portion of the first array to a portion of the second array. And, you think you're done, well, you're not. Because an array can itself contain sub-arrays, and if you want to compare them with the same `Arrays.equals()` method, then you need to call another method, which is `Arrays.deepEquals()`. So, for simple arrays, you call `Arrays.equals()`, and for multi-dimensional arrays, you call `Arrays.deepEquals()`.
+
+```java
+var ints1 = new int[] { 1, 2, 3 };
+var ints2 = new int[] { 1, 2, 3 };
+var equals = ints1.equals(ints2);
+IO.println(equals);
+// > false
+```
+
+```java
+var ints1 = new int[] { 1, 2, 3 };
+var ints2 = new int[] { 1, 2, 3 };
+var equals = Arrays.equals(int1, int2);
+IO.println(equals);
+// > true
+```
+
+```java
+var ints1 = new int[] { 1, 2, 3 };
+var ints11 = new int[] { ints1 };
+
+var ints2 = new int[] { 1, 2, 3 };
+var ints21 = new int[] { ints2 };
+
+var equals = Arrays.equals(int11, int21);
+IO.println(equals);
+// > false
+```
+
+```java
+var ints1 = new int[] { 1, 2, 3 };
+var ints11 = new int[] { ints1 };
+
+var ints2 = new int[] { 1, 2, 3 };
+var ints21 = new int[] { ints2 };
+
+var equals = Arrays.deepEquals(int11, int21);
+IO.println(equals);
+// > true
+```
+
+One last word; all these methods support null values in your arrays. Why would you put null values in an array? So, they will not fail in case of nulls and work with the following convention, two null values are equal. Again, don't put null values in your arrays.
+</details>
+
+## 382. How can you get the max of a Collection?
+<details>
+  <summary>Short Answer</summary>
+There are patterns for that.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+There are actually several patterns with different pros and cons. If what you need is just to extract the max without transforming the elements of your collection or without filtering them, then `Collections.max()` is a good choice. It is a factory method, so you need to pass your collection and pass a Comparator if you need to get the max. Note that if your collection has null elements, you will get a `NullPointerException`. And if your collection is empty, you will get a `NoSuchElementException`. The second pattern is, of course, based on streams. Just call `stream()`, then `max()`, and pass your Comparator. And you will also get a `NullPointerException` if there is a null value in your stream. But if your stream is empty, you will get an empty Optional because `max()` returns an Optional, which is probably better when it comes to error handling.
+
+```java
+var ints1 = List.of(1, 2, 3, 4);
+var max = Collections.max(ints, Comparator.<Integer>naturalOrder().reversed());
+// > 1
+```
+
+```java
+var ints1 = List.of(1, null, 3, 4);
+var max = Collections.max(ints);
+// > NullPointerException
+```
+
+```java
+var ints1 = List.of();
+var max = Collections.max(ints);
+// > NoSuchElementException
+```
+
+```java
+var stream = Stream.of(1, null, 3);
+var max = stream.max(Comparator.naturalOrder());
+// > NullPointerException
+```
+
+```java
+var stream = Stream.<Integer>of();
+var max = stream.max(Comparator.naturalOrder());
+// > Optional.empty
+```
+
+One last word; be careful with the Stream pattern because you still need to pay the price of the creation of the stream, which is an overhead that you may want to avoid. So, unless there are specific stream features that you need, using the good old `Collections.max()` is probably your best choice.
+</details>
+
+## 383. What is jlink?
+<details>
+  <summary>Short Answer</summary>
+A standard tool of the JDK.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+The JDK gives you two tools that work together to package and distribute your application as an executable or as an installer. The first tool is called `jlink`. It is part of the JDK distribution and it does exactly what it means. If your application is a modular application, it lists all the modules your application depends on and it does that even for the modules of the JDK itself. So, you get only the modules you need, stripping the ones you do not depend on. It also means that you need to be careful with the module you depend on, depending on a several megabytes module when all you need is a single class or two may not be the best idea.
+
+```bash
+> jlink
+ --module-path \
+    target/classes; \
+    target/dependency \
+ --add-modules \
+    org.myapp.mymodule \ // your module
+ --bind-services \
+ --strip-debug \
+ --no-header-files \
+ --no-man-pages \
+ --output myapp-image  // the output directory
+```
+
+One last word; once you have that, you can use `jpackage` to create an installer to distribute your application. It works on Windows, MacOS and various flavors of Linux. But, that will be for another time.
+</details>
+
+## 384. How can you use the preview features?
+<details>
+  <summary>Short Answer</summary>
+There are two options for that. One for the compiler and another one for the JVM.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+You need to activate preview features at two levels. The first one is the compiler level. You add `--enable-preview` and then you need to specify either the version of the source you're using with `-source`, which could be between 8 and the version of the JDK you're using, or the version of the ByteCode you want to generate with `--target`, followed by the version between 8 and the version of the JDK you're using. And then you need to specify that you wish to run this code with the preview feature enabled, by adding the same option: `--enable-preview` to the Java command. So, in a nutshell, you cannot use preview features by accident. You need to tell the compiler that you want to activate them and at runtime you need to tell the JVM that you want to run them.
+
+```java
+public class MyClass {
+    // lazyConstant is a preview feature of 26
+    static final LazyConstant<String> CONST = LazyConstant.of(() -> "Hello World!");
+    void main() {
+        IO.println(CONST.get());
+    }
+}
+// > javac MyClass.class
+// error: LazyConstant is a preview API and is disabled by default.
+
+// > javac --enable-preview MyClass.class
+// error: --enable-preview must be used with either -source or --release
+
+// > javac --enable-preview -source 26 MyClass.class
+// Note: MyClass.java uses preview features of Java SE 26.
+// Note: Recompile with -Xlint:preview for details.
+```
+
+One last word, this preview feature mechanism is useful because you can activate them on demand without having to download some separate elements of the JDK. So, it's easy to check for them, to play with them, and to provide feedback on the OpenJDK mailing list. If you feel something is missing or wrong. This is something you should definitely do.
+</details>
+
+## 385. What is a group in regular expessions
+<details>
+  <summary>Short Answer</summary>
+Something very useful to analyze strings of characters.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+Groups are actually a feature of regular expressions specified outside of the JDK. A group is just a portion of your regular expression between parentheses, like on this example. With such a regular expression, you can analyze a string of characters, match it to get a Matcher, and if you have a match, then get the different elements you need from it. The nice thing is that you can give names to groups to make your code more expressive. You can specify the name of this group in that way, in your regular expression, and then if you have a match, you can get the values of the different groups by their names, which makes your code much more readable.
+
+```java
+var pattern = Pattern.compile("(\d+);([ a-zA-Z]+);([\\d]+)$");
+var line = "12;New York;2 000 000";
+var matcher = pattern.matcher(line);
+if(matcher.matches()) {
+    IO.println("id=" + matcher.group(1));
+    IO.println("city=" + matcher.group(2));
+    IO.println("population=" + matcher.group(3));
+}
+```
+
+```java
+var pattern = Pattern.compile("(?<id>\d+);(?<city>[ a-zA-Z]+);(?<population>[\\d]+)$");
+var line = "12;New York;2 000 000";
+var matcher = pattern.matcher(line);
+if(matcher.matches()) {
+    IO.println("id=" + matcher.group("id"));
+    IO.println("city=" + matcher.group("city"));
+    IO.println("population=" + matcher.group("population"));
+}
+```
+
+One last word; Remember that you have a Stream pattern to analyze a long text with a regular expression, in a lazy way. If what you're looking for is the first occurrence of something, then this pattern is the one you want to use.
+</details>
+
+## 386. What is a canonical constructor?
+<details>
+  <summary>Short Answer</summary>
+A constructor.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+A canonical constructor has to do with `Records`. When you declare a record, you do not need to write its constructor. You just declare the components of this record and the compiler generates the constructor that takes these components for you. This constructor that takes all the components is called the canonical constructor. Records have been designed in such a way that you cannot create a record instance without calling its canonical constructor. Even if you create more constructors for your record, then you need to call this canonical constructor. And even deserialization follows this specification. So, if you have validation rules in a canonical constructor, you have the guarantee that they will be executed for all the instances of this record without any exception.
+
+```java
+record Point(int x, int y) {
+    // another constructor...
+    Point() {
+        // ...needs to call the canonical constructor
+        this(0, 0);
+    }
+}
+// calls the canonical constructor
+var p0 = new Point(1, 1);
+var p1 = new Point();
+```
+
+One last word; when you think about it, record is the only kind of class that offers this guarantee. For regular classes, deserialization does not call any constructor and so it's not possible to validate your instances in that case.
+</details>
+
+## 387. What is the stack of a thread?
+<details>
+  <summary>Short Answer</summary>
+A portion of memory.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+Fortunately, this is something you do not need to take care of in Java, as it is managed for you by the API. In a nutshell: the stack of a thread is the portion of memory used by a thread to store everything it needs. It stores all the local variables created by the code it executes and can have references to the heap. References themselves live on the stack and the memory referenced lives on the heap. What lives on the stack is not shared. Each thread has its own and it's not the case for the heap, of course, where all the threads of your application can read and write data. The heap is where race conditions can happen. No race condition for what you have on the stack.
+
+```mermaid
+flowchart TB
+
+    T1["Thread 1<br/><br/>Register<br/><br/>Program Counter<br/><br/>Stack"]
+    T2["Thread 2<br/><br/>Register<br/><br/>Program Counter<br/><br/>Stack"]
+    T3["Thread 3<br/><br/>Register<br/><br/>Program Counter<br/><br/>Stack"]
+
+    HEAP["Heap<br/><br/>(shared by all threads)"]
+
+    T1 --- HEAP
+    T2 --- HEAP
+    T3 --- HEAP
+
+    style T1 fill:#f57c00,color:white,stroke:white,stroke-width:2px
+    style T2 fill:#69b342,color:white,stroke:white,stroke-width:2px
+    style T3 fill:#888888,color:white,stroke:white,stroke-width:2px
+    style HEAP fill:#4778c5,color:white,stroke:white,stroke-width:2px
+```
+
+One last word, threads are a system resource and the size of the stack is fixed at your system level. It may vary from one operating system to the other, but it's typically several megabytes of memory.
+</details>
+
+## 388. How can you format a String of characters?
+<details>
+  <summary>Short Answer</summary>
+There is a method for that.
+</details>
+<details>
+  <summary>Less Short Answer</summary>
+
+There are several solutions given to you by the JDK. The simplest one is probably the `format()` factory method of the String class. It takes a format as a first argument, and then the objects you want to pass to this format to render them as a String. This format is inspired by this horrible format from the C `printf()` function that everybody knows. It is described in the Javadoc of the Formatter class, and there are some differences between the C `printf()` and the Java Formatter. For instance, the errors are not handled in the same way, and some customization has been made.
+
+```java
+var format = "d = %+6.4f%n";
+String.format(format, Math.PI);
+// > d = +3.1416
+
+String.format(format, Math.E);
+// > d = +2.7183
+```
+
+```java
+var format = "d = %+6.4f%n";
+String.format(Locale.FRANCE, format, 10);
+// > IllegalFormatConversionException
+```
+
+One last word; thread safety, may be an issue when it comes to formatting strings. You may think that sharing your formats is a good idea and will save you some resources, but you need to be careful because they carry some mutable state, something you need to be aware of.
+</details>
